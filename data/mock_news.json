@@ -1,0 +1,23 @@
+[
+  {
+    "id": "news-apple-1",
+    "source": "mock",
+    "published_at": "2025-01-01T10:00:00Z",
+    "title": "Apple earnings beat expectations",
+    "content": "Apple reported earnings and raised guidance for next quarter. Analysts highlighted stronger iPhone demand."
+  },
+  {
+    "id": "news-tesla-1",
+    "source": "mock",
+    "published_at": "2025-01-02T14:00:00Z",
+    "title": "Tesla launches new Model Y variant",
+    "content": "Tesla announced a new Model Y variant with extended range and software updates."
+  },
+  {
+    "id": "news-apple-2",
+    "source": "mock",
+    "published_at": "2025-01-03T09:30:00Z",
+    "title": "Apple resolves supply chain issue",
+    "content": "Apple said a key supplier issue has been resolved, easing near-term production constraints."
+  }
+]
