@@ -6,113 +6,123 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from app.models import LLMImpact, RetrievedChunk
+from app.models import LLMImpactResult, RAGChunk
 
 PROMPT_TEMPLATE = """
-[PASTE THE PROMPT TEMPLATE HERE EXACTLY]
+You are a market impact analyst. Return STRICT JSON only with the schema below.
+If uncertain or insufficient evidence, set is_new_information=false and confidence low.
+Never output BUY/SELL recommendations.
+
+Schema:
+{
+  "ticker": "AAPL",
+  "event_type": "lawsuit|earnings|guidance|product_launch|regulatory|macro|other",
+  "is_new_information": true/false,
+  "impact_score": -1.0..1.0,
+  "horizon": "intraday|swing|long",
+  "severity": "low|med|high",
+  "confidence": 0..1,
+  "risk_flags": ["rumor","low_quality_source","ambiguous","already_priced_in"],
+  "contradiction_flags": ["conflicts_with_guidance","conflicts_with_state","none"],
+  "summary": "1-2 sentence",
+  "evidence": "1 short excerpt from the article",
+  "citations": [{"layer":"profile|state|event","source_id":"...","why":"..."}]
+}
+
+Context chunks (cite by layer + source_id):
+{context}
+
+Article:
+{article}
 """
 
-
-def build_prompt(ticker: str, article: dict[str, Any], retrieved_chunks: list[RetrievedChunk]) -> str:
-    formatted_chunks = []
-    for idx, chunk in enumerate(retrieved_chunks, start=1):
-        formatted_chunks.append(
-            f"[{idx}] layer={chunk.layer} source_id={chunk.source_id} text={chunk.text}"
-        )
-    joined_chunks = "\n".join(formatted_chunks)
-    return PROMPT_TEMPLATE.format(
-        TICKER=ticker,
-        SOURCE=article["source"],
-        PUBLISHED_AT=article["published_at"],
-        TITLE=article["title"],
-        ARTICLE_TEXT=article["cleaned_text"],
-        RETRIEVED_CHUNKS=joined_chunks,
-    )
-
-
-class LLMProvider:
-    def analyze(self, prompt: str) -> str:
-        raise NotImplementedError
-
-
-class StubLLMProvider(LLMProvider):
-    def analyze(self, prompt: str) -> str:
-        layer = "state"
-        source_id = "snapshot"
-        for line in prompt.splitlines():
-            if line.strip().startswith("[1]") and "layer=" in line and "source_id=" in line:
-                parts = line.split()
-                for part in parts:
-                    if part.startswith("layer="):
-                        layer = part.split("=", 1)[1]
-                    if part.startswith("source_id="):
-                        source_id = part.split("=", 1)[1]
-                break
-        payload = {
-            "ticker": "AAPL",
-            "event_type": "earnings",
-            "is_new_information": True,
-            "impact_score": 0.2,
-            "horizon": "swing",
-            "severity": "med",
-            "confidence": 0.72,
-            "risk_flags": [],
-            "contradiction_flags": ["none"],
-            "summary": "Earnings update driven by recent results.",
-            "evidence": "Reported earnings and guidance details.",
-            "citations": [
-                {"layer": layer, "source_id": source_id, "why": "context"},
-            ],
-        }
-        return json.dumps(payload)
-
-
-class FailingLLMProvider(LLMProvider):
-    def analyze(self, prompt: str) -> str:
-        return "{invalid-json"
-
-
-class OpenAIProvider(LLMProvider):
-    def __init__(self, api_key: str) -> None:
-        self.api_key = api_key
-
-    def analyze(self, prompt: str) -> str:
-        raise NotImplementedError("Wire up a real LLM provider here.")
+# Example JSON (for stub testing only; real LLM must not rely on this):
+# {
+#   "ticker": "AAPL",
+#   "event_type": "earnings",
+#   "is_new_information": true,
+#   "impact_score": 0.3,
+#   "horizon": "swing",
+#   "severity": "med",
+#   "confidence": 0.7,
+#   "risk_flags": [],
+#   "contradiction_flags": ["none"],
+#   "summary": "Apple reported a quarterly beat and raised guidance.",
+#   "evidence": "Apple reported earnings above expectations.",
+#   "citations": [{"layer": "profile", "source_id": "AAPL", "why": "baseline profile"}]
+# }
 
 
 @dataclass
-class LLMResult:
-    output: LLMImpact | None
-    raw: str
-    error: str | None
+class LLMResponse:
+    raw_json: dict[str, Any] | None
+    error: str | None = None
 
 
-def parse_output(raw_json: str) -> LLMImpact:
-    parsed = json.loads(raw_json)
-    return LLMImpact.model_validate(parsed)
+class LLMClient:
+    def analyze(self, ticker: str, article: str, context: list[RAGChunk]) -> LLMResponse:
+        lowered = article.lower()
+        event_type = "other"
+        if "earnings" in lowered:
+            event_type = "earnings"
+        elif "guidance" in lowered or "forecast" in lowered:
+            event_type = "guidance"
+        elif "lawsuit" in lowered or "sued" in lowered:
+            event_type = "lawsuit"
+        elif "launch" in lowered or "product" in lowered:
+            event_type = "product_launch"
+        elif "regulator" in lowered or "regulatory" in lowered:
+            event_type = "regulatory"
+        elif "macro" in lowered or "inflation" in lowered:
+            event_type = "macro"
+
+        confidence = 0.6 if event_type != "other" else 0.3
+        impact_score = 0.2 if event_type in {"product_launch", "earnings"} else -0.2
+
+        citations = []
+        for chunk in context[:2]:
+            citations.append(
+                {"layer": chunk.layer, "source_id": chunk.source_id, "why": "background"}
+            )
+
+        payload = {
+            "ticker": ticker,
+            "event_type": event_type,
+            "is_new_information": True,
+            "impact_score": impact_score,
+            "horizon": "swing",
+            "severity": "med" if abs(impact_score) > 0.15 else "low",
+            "confidence": confidence,
+            "risk_flags": [],
+            "contradiction_flags": ["none"],
+            "summary": article[:140].strip(),
+            "evidence": article[:120].strip(),
+            "citations": citations,
+        }
+        return LLMResponse(raw_json=payload)
 
 
-def validate_output(parsed: LLMImpact, retrieved_chunks: list[RetrievedChunk]) -> None:
-    if not parsed.citations:
-        raise ValueError("Citations must be non-empty.")
-    valid_pairs = {(chunk.layer, chunk.source_id) for chunk in retrieved_chunks}
-    for citation in parsed.citations:
-        if (citation.layer, citation.source_id) not in valid_pairs:
-            raise ValueError("Citation references missing chunk.")
-    allowed = {"conflicts_with_guidance", "conflicts_with_state", "none"}
-    if not any(flag in allowed for flag in parsed.contradiction_flags):
-        raise ValueError("Invalid contradiction flags.")
+class OpenAIClient(LLMClient):
+    def __init__(self, api_key: str) -> None:
+        self.api_key = api_key
+
+    def analyze(self, ticker: str, article: str, context: list[RAGChunk]) -> LLMResponse:
+        raise NotImplementedError("Connect to OpenAI API here; keep optional for MVP.")
 
 
-def analyze_with_provider(
-    prompt: str,
-    retrieved_chunks: list[RetrievedChunk],
-    provider: LLMProvider,
-) -> LLMResult:
-    raw = provider.analyze(prompt)
+def analyze_article(
+    ticker: str,
+    article: str,
+    context: list[RAGChunk],
+    client: LLMClient | None = None,
+) -> LLMImpactResult | None:
+    client = client or LLMClient()
+    response = client.analyze(ticker=ticker, article=article, context=context)
+    if response.error:
+        return None
+    if response.raw_json is None:
+        return None
     try:
-        parsed = parse_output(raw)
-        validate_output(parsed, retrieved_chunks)
-        return LLMResult(output=parsed, raw=raw, error=None)
-    except (json.JSONDecodeError, ValidationError, ValueError) as exc:
-        return LLMResult(output=None, raw=raw, error=str(exc))
+        return LLMImpactResult.model_validate(response.raw_json)
+    except ValidationError:
+        return None

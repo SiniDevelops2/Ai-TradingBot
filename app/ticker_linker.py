@@ -1,31 +1,25 @@
 from __future__ import annotations
 
 import re
+from typing import Iterable
 
 ALIAS_MAP = {
-    "apple": "AAPL",
-    "apple inc": "AAPL",
-    "tesla": "TSLA",
-    "tesla motors": "TSLA",
-    "microsoft": "MSFT",
+    "APPLE": "AAPL",
+    "APPLE INC": "AAPL",
+    "AAPL": "AAPL",
+    "TESLA": "TSLA",
+    "TSLA": "TSLA",
 }
 
-TICKER_PATTERN = re.compile(r"\$([A-Z]{1,5})\b")
+TICKER_RE = re.compile(r"\$([A-Z]{1,5})")
 
 
-def extract_tickers(cleaned_text: str, title: str) -> list[dict[str, float | str]]:
-    combined = f"{title} {cleaned_text}"
-    found = set()
-
-    for match in TICKER_PATTERN.findall(combined):
-        found.add(match.upper())
-
-    lowered = combined.lower()
+def extract_tickers(texts: Iterable[str]) -> list[str]:
+    joined = " ".join(texts).upper()
+    tickers = set()
+    for match in TICKER_RE.findall(joined):
+        tickers.add(match)
     for alias, ticker in ALIAS_MAP.items():
-        if alias in lowered:
-            found.add(ticker)
-
-    results = []
-    for ticker in sorted(found):
-        results.append({"ticker": ticker, "confidence": 0.9})
-    return results
+        if alias in joined:
+            tickers.add(ticker)
+    return sorted(tickers)

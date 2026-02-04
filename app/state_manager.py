@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 
 from app import db
-from app.models import LLMImpact
-from app.rag import upsert_chunk
+from app.models import LLMImpactResult
 
 
-def _parse_ts(value: str) -> datetime:
+def _parse_ts(value: str | datetime) -> datetime:
+    if isinstance(value, datetime):
+        return value
     return datetime.fromisoformat(value)
 
 
@@ -19,26 +21,26 @@ def _summary_similarity(a: str, b: str) -> float:
     return len(tokens_a & tokens_b) / len(tokens_a | tokens_b)
 
 
-def _should_close(summary: str, contradiction_flags: list[str], confidence: float) -> bool:
+def _is_closure(summary: str, contradiction_flags: list[str]) -> bool:
     lowered = summary.lower()
-    resolved_terms = {"resolved", "settled", "closed", "withdrawn"}
-    if any(term in lowered for term in resolved_terms):
+    closure_terms = ["resolved", "settled", "closed", "withdrawn", "ended"]
+    if any(term in lowered for term in closure_terms):
         return True
-    return "conflicts_with_state" in contradiction_flags and confidence >= 0.75
+    return "conflicts_with_state" in contradiction_flags
 
 
-def apply_update(ticker: str, analysis: LLMImpact, news_meta: dict[str, str]) -> dict[str, str]:
-    if not analysis.is_new_information:
-        return {"status": "ignored"}
-
-    guard = db.fetch_one(
-        """
-        SELECT id FROM state_events
-        WHERE ticker = ? AND source_id = ? AND event_type = ?
-        """,
-        (ticker, news_meta["id"], analysis.event_type),
+def apply_event_update(
+    ticker: str,
+    news_id: str,
+    published_at: str | datetime,
+    analysis: LLMImpactResult,
+) -> dict[str, str]:
+    published_dt = _parse_ts(published_at)
+    existing = db.fetch_one(
+        "SELECT id FROM state_events WHERE ticker = ? AND event_type = ? AND source_id = ?",
+        (ticker, analysis.event_type, news_id),
     )
-    if guard:
+    if existing:
         return {"status": "idempotent"}
 
     open_events = db.fetch_all(
@@ -50,16 +52,23 @@ def apply_update(ticker: str, analysis: LLMImpact, news_meta: dict[str, str]) ->
         if row["event_type"] == analysis.event_type:
             matched_event = row
             break
-        if _summary_similarity(row["summary"], analysis.summary) > 0.4:
+        similarity = _summary_similarity(row["summary"], analysis.summary)
+        if similarity > 0.4:
             matched_event = row
             break
 
-    if _should_close(analysis.summary, analysis.contradiction_flags, analysis.confidence):
-        if matched_event:
-            db.execute(
-                "UPDATE state_events SET status = 'closed', end_ts = ? WHERE id = ?",
-                (news_meta["published_at"], matched_event["id"]),
-            )
+    closing = _is_closure(analysis.summary, analysis.contradiction_flags)
+    if closing and matched_event:
+        db.execute(
+            """
+            UPDATE state_events
+            SET status = 'closed', end_ts = ?
+            WHERE id = ?
+            """,
+            (published_dt.isoformat(), matched_event["id"]),
+        )
+
+    if closing:
         db.execute(
             """
             INSERT INTO state_events (
@@ -74,12 +83,12 @@ def apply_update(ticker: str, analysis: LLMImpact, news_meta: dict[str, str]) ->
                 analysis.impact_score,
                 analysis.horizon,
                 analysis.summary,
-                news_meta["id"],
-                news_meta["published_at"],
-                news_meta["published_at"],
+                news_id,
+                published_dt.isoformat(),
+                published_dt.isoformat(),
                 analysis.confidence,
                 analysis.evidence,
-                db.utc_now(),
+                datetime.utcnow().isoformat(),
             ),
         )
         rebuild_snapshot(ticker)
@@ -88,7 +97,7 @@ def apply_update(ticker: str, analysis: LLMImpact, news_meta: dict[str, str]) ->
     if matched_event:
         should_update = (
             analysis.confidence > matched_event["confidence"]
-            or news_meta["published_at"] > matched_event["start_ts"]
+            or published_dt.isoformat() > matched_event["start_ts"]
         )
         if should_update:
             db.execute(
@@ -105,7 +114,7 @@ def apply_update(ticker: str, analysis: LLMImpact, news_meta: dict[str, str]) ->
                     analysis.summary,
                     analysis.confidence,
                     analysis.evidence,
-                    news_meta["published_at"],
+                    published_dt.isoformat(),
                     matched_event["id"],
                 ),
             )
@@ -126,11 +135,11 @@ def apply_update(ticker: str, analysis: LLMImpact, news_meta: dict[str, str]) ->
             analysis.impact_score,
             analysis.horizon,
             analysis.summary,
-            news_meta["id"],
-            news_meta["published_at"],
+            news_id,
+            published_dt.isoformat(),
             analysis.confidence,
             analysis.evidence,
-            db.utc_now(),
+            datetime.utcnow().isoformat(),
         ),
     )
     rebuild_snapshot(ticker)
@@ -192,19 +201,6 @@ def rebuild_snapshot(ticker: str) -> None:
         ],
         "recent_catalysts": recent_catalysts,
         "key_risks": key_risks,
-        "last_updated": db.utc_now(),
+        "last_updated": datetime.utcnow().isoformat(),
     }
-    db.upsert_snapshot(ticker, snapshot)
-
-    for row in rows:
-        chunk_key = f"event:{row['id']}"
-        text = f"{row['summary']} {row['evidence']}"
-        upsert_chunk(chunk_key, ticker, "event", f"event_{row['id']}", text)
-
-    upsert_chunk("snapshot", ticker, "state", "snapshot", json_dump(snapshot))
-
-
-def json_dump(payload: dict[str, str | float | list[dict[str, str | float]]]) -> str:
-    import json
-
-    return json.dumps(payload)
+    db.store_snapshot(ticker, snapshot)

@@ -1,39 +1,40 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 
-class NewsPayload(BaseModel):
+class NewsIn(BaseModel):
     id: str
     source: str
-    published_at: str
+    published_at: datetime
     title: str
     content: str
 
 
-class IngestResult(BaseModel):
+class NewsClean(BaseModel):
     id: str
-    status: Literal["inserted", "duplicate"]
-    tickers: list[dict[str, float | str]]
+    cleaned_text: str
+    hash: str
+    tickers: list[str]
 
 
-class RetrievedChunk(BaseModel):
-    chunk_key: str
-    layer: str
+class RAGChunk(BaseModel):
+    layer: Literal["profile", "state", "event"]
     source_id: str
-    text: str
+    snippet: str
+    timestamp: datetime | None = None
 
 
 class Citation(BaseModel):
-    layer: str
+    layer: Literal["profile", "state", "event"]
     source_id: str
     why: str
 
 
-class LLMImpact(BaseModel):
+class LLMImpactResult(BaseModel):
     ticker: str
     event_type: Literal[
         "lawsuit",
@@ -58,9 +59,9 @@ class LLMImpact(BaseModel):
 
 class AnalyzeResult(BaseModel):
     ticker: str
-    status: str
-    error_message: str | None
-    analysis: LLMImpact | None
+    analysis: LLMImpactResult | None
+    retrieved_chunks: list[RAGChunk]
+    error: str | None = None
 
 
 class AnalyzeResponse(BaseModel):
@@ -68,9 +69,29 @@ class AnalyzeResponse(BaseModel):
     results: list[AnalyzeResult]
 
 
+class StateEvent(BaseModel):
+    event_type: str
+    status: str
+    severity: str
+    impact_score: float
+    horizon: str
+    summary: str
+    source_id: str
+    start_ts: datetime
+    end_ts: datetime | None
+    confidence: float
+    evidence: str
+
+
 class StateSnapshot(BaseModel):
     ticker: str
-    open_events: list[dict[str, str | float]]
-    recent_catalysts: list[dict[str, str | float]]
-    key_risks: list[dict[str, str | float]]
+    open_events: list[dict[str, Any]]
+    recent_catalysts: list[dict[str, Any]]
+    key_risks: list[dict[str, Any]]
     last_updated: datetime
+
+
+class IngestResponse(BaseModel):
+    id: str
+    deduped: bool
+    tickers: list[str]

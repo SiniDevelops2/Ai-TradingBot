@@ -1,64 +1,70 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from datetime import datetime
 
 from app import db
-from app.models import IngestResult, NewsPayload
+from app.models import IngestResponse, NewsIn
 from app.ticker_linker import extract_tickers
-from app.utils import clean_text, compute_hash
+from app.utils import clean_text, hash_text
 
 
-def ingest_news(payload: NewsPayload) -> IngestResult:
+def ingest_news(item: NewsIn) -> IngestResponse:
     db.init_db()
-    cleaned_text = clean_text(payload.content)
-    content_hash = compute_hash(cleaned_text)
-    tickers = extract_tickers(cleaned_text, payload.title)
+    cleaned_text = clean_text(f"{item.title} {item.content}")
+    content_hash = hash_text(cleaned_text)
+    deduped = False
 
     existing = db.fetch_one("SELECT id FROM news_clean WHERE hash = ?", (content_hash,))
-    status = "inserted"
     if existing:
-        status = "duplicate"
+        deduped = True
     else:
-        db.insert_news_clean(
-            {
-                "id": payload.id,
-                "source": payload.source,
-                "published_at": payload.published_at,
-                "title": payload.title,
-                "cleaned_text": cleaned_text,
-                "hash": content_hash,
-                "tickers": tickers,
-            }
+        db.execute(
+            """
+            INSERT INTO news_raw (id, source, published_at, title, content)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                item.id,
+                item.source,
+                item.published_at.isoformat(),
+                item.title,
+                item.content,
+            ),
         )
 
-    raw_existing = db.fetch_one("SELECT id FROM news_raw WHERE id = ?", (payload.id,))
-    if not raw_existing:
-        db.insert_news_raw(
-            {
-                "id": payload.id,
-                "source": payload.source,
-                "published_at": payload.published_at,
-                "title": payload.title,
-                "content": payload.content,
-            }
+    tickers = extract_tickers([item.title, item.content])
+    if not deduped:
+        db.execute(
+            """
+            INSERT INTO news_clean (id, cleaned_text, hash, tickers_json)
+            VALUES (?, ?, ?, ?)
+            """,
+            (item.id, cleaned_text, content_hash, json.dumps(tickers)),
         )
+    return IngestResponse(id=item.id, deduped=deduped, tickers=tickers)
 
-    return IngestResult(id=payload.id, status=status, tickers=tickers)
 
-
-def load_clean_news(news_id: str) -> dict[str, Any] | None:
+def load_clean_news(news_id: str) -> dict[str, str] | None:
     row = db.fetch_one("SELECT * FROM news_clean WHERE id = ?", (news_id,))
     if not row:
         return None
-    return dict(row)
+    return {
+        "id": row["id"],
+        "cleaned_text": row["cleaned_text"],
+        "hash": row["hash"],
+        "tickers_json": row["tickers_json"],
+    }
 
 
-def parse_tickers_json(raw: str) -> list[dict[str, float | str]]:
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return []
-    if isinstance(data, list):
-        return data
-    return []
+def load_raw_news(news_id: str) -> dict[str, str] | None:
+    row = db.fetch_one("SELECT * FROM news_raw WHERE id = ?", (news_id,))
+    if not row:
+        return None
+    return {
+        "id": row["id"],
+        "source": row["source"],
+        "published_at": row["published_at"],
+        "title": row["title"],
+        "content": row["content"],
+    }

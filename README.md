@@ -1,16 +1,13 @@
 # Company State RAG MVP (Step 5)
 
-This project implements a news-driven company state system up through Step 5:
-ingest news → clean/dedupe → ticker linking → RAG retrieval → prompt builder →
-LLM JSON validation → audit logging → Option B state updates → snapshot rebuild →
-vector index updates. No trading logic or broker execution is included.
+This MVP implements news ingestion, ticker linking, RAG retrieval, LLM grounded impact analysis (strict JSON), and deterministic company state updates with conflict resolution.
 
-## Setup
+## Quickstart
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install fastapi uvicorn pydantic
 ```
 
 Run the API:
@@ -19,7 +16,7 @@ Run the API:
 uvicorn app.main:app --reload
 ```
 
-## Sample curl
+## Sample CURL
 
 ```bash
 curl -X POST http://localhost:8000/ingest_news \
@@ -37,8 +34,33 @@ curl -X POST http://localhost:8000/ingest_news \
 curl -X POST http://localhost:8000/analyze_news/news-apple-1
 ```
 
+## Expected JSON Output (example)
+
+```json
+{
+  "ticker": "AAPL",
+  "event_type": "earnings",
+  "is_new_information": true,
+  "impact_score": 0.2,
+  "horizon": "swing",
+  "severity": "med",
+  "confidence": 0.6,
+  "risk_flags": [],
+  "contradiction_flags": ["none"],
+  "summary": "Apple reported earnings and raised guidance for next quarter.",
+  "evidence": "Apple reported earnings and raised guidance for next quarter.",
+  "citations": [
+    {"layer": "profile", "source_id": "AAPL", "why": "background"}
+  ]
+}
+```
+
+## Mock Dataset
+
+See `data/mock_news.json` for 3 example news items (AAPL/TSLA) to drive the pipeline.
+
 ## Notes
 
-- SQLite persistence defaults to `data/app.db` (override with `APP_DB_PATH`).
-- Embeddings and LLM calls are stubbed for deterministic, offline runs.
-- Vector chunks are stored in SQLite and queried via cosine similarity.
+- SQLite persistence lives at `data/app.db` by default (override with `APP_DB_PATH`).
+- Vector store uses FAISS when available; otherwise it falls back to a deterministic in-memory store.
+- The LLM adapter is stubbed for deterministic tests; a real provider adapter can be wired later.
